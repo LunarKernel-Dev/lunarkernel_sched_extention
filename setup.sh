@@ -11,12 +11,12 @@ display_usage() {
 }
 
 initialize_variables() {
-    if test -d "$GKI_ROOT/driver/staging"; then
-         DRIVER_STAGING_DIR="$GKI_ROOT/driver/staging"
-    elif test -d "$GKI_ROOT/common/driver/staging"; then
-         DRIVER_STAGING_DIR="$GKI_ROOT/common/driver/staging"
+    if test -d "$GKI_ROOT/drivers/staging"; then
+         DRIVER_STAGING_DIR="$GKI_ROOT/drivers/staging"
+    elif test -d "$GKI_ROOT/common/drivers/staging"; then
+         DRIVER_STAGING_DIR="$GKI_ROOT/common/drivers/staging"
     else
-         echo '[ERROR] "driver/staging/" directory not found.'
+         echo '[ERROR] "drivers/staging/" directory not found.'
          exit 127
     fi
 
@@ -29,7 +29,7 @@ perform_cleanup() {
     echo "[+] Cleaning up..."
     [ -L "$DRIVER_STAGING_DIR/lunarkernel_sched_extention" ] && rm "$DRIVER_STAGING_DIR/lunarkernel_sched_extention" && echo "[-] Symlink removed."
     grep -q "lunarkernel_sched_extention" "$DRIVER_STAGING_MAKEFILE" && sed -i '/lunarkernel_sched_extention/d' "$DRIVER_STAGING_MAKEFILE" && echo "[-] Makefile reverted."
-    grep -q "driver/staging/lunarkernel_sched_extention/Kconfig" "$DRIVER_STAGING_KCONFIG" && sed -i '/driver/staging\/lunarkernel_sched_extention\/Kconfig/d' "$DRIVER_STAGING_KCONFIG" && echo "[-] Kconfig reverted."
+    grep -q "drivers/staging/lunarkernel_sched_extention/Kconfig" "$DRIVER_STAGING_KCONFIG" && sed -i '/drivers/staging\/lunarkernel_sched_extention\/Kconfig/d' "$DRIVER_STAGING_KCONFIG" && echo "[-] Kconfig reverted."
     if [ -d "$GKI_ROOT/lunarkernel_sched_extention" ]; then
         rm -rf "$GKI_ROOT/lunarkernel_sched_extention" && echo "[-] lunarkernel_sched_extention directory deleted."
     fi
@@ -45,7 +45,7 @@ setup_LSE() {
 
     # Add entries in Makefile and Kconfig if not already existing
     grep -q "lunarkernel_sched_extention" "$DRIVER_STAGING_MAKEFILE" || printf "\nobj-\$(CONFIG_LUNAR_SCHED_EXT) += lunarkernel_sched_extention/\n" >> "$DRIVER_STAGING_MAKEFILE" && echo "[+] Modified Makefile."
-    grep -q "source \"driver/staging/lunarkernel_sched_extention/Kconfig\"" "$DRIVER_STAGING_KCONFIG" || sed -i "/endmenu/i\source \"driver/staging/lunarkernel_sched_extention/Kconfig\"" "$DRIVER_STAGING_KCONFIG" && echo "[+] Modified Kconfig."
+    grep -q "source \"drivers/staging/lunarkernel_sched_extention/Kconfig\"" "$DRIVER_STAGING_KCONFIG" || sed -i "/endmenu/i\source \"drivers/staging/lunarkernel_sched_extention/Kconfig\"" "$DRIVER_STAGING_KCONFIG" && echo "[+] Modified Kconfig."
     echo '[+] Done.'
 }
 
