@@ -441,7 +441,11 @@ void lse_update_task_ravg(struct lse_entity *lse, struct task_struct *p, struct 
 	if(!lrq->window_start || lts->mark_start == wallclock)
 		return;
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 15, 0)
 	if (unlikely(!raw_spin_is_locked(&rq->__lock)))
+#else
+	if (unlikely(!raw_spin_is_locked(&rq->lock)))
+#endif
 		LSE_BUG("on CPU%d: %s task %s(%d) unlocked access"
 				 "for cpu=%d stack[%pS <== %pS <== %pS]\n",
 				 raw_smp_processor_id(), __func__,
@@ -505,9 +509,17 @@ void lse_sched_stats_init(void)
 	for_each_possible_cpu(cpu) {
 		struct rq *rq = cpu_rq(cpu);
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 15, 0)
 		raw_spin_lock_irqsave(&rq->__lock, flags);
+#else
+		raw_spin_lock_irqsave(&rq->lock, flags);
+#endif
 		lse_sched_init_rq(rq);
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 15, 0)
 		raw_spin_unlock_irqrestore(&rq->__lock, flags);
+#else
+		raw_spin_unlock_irqrestore(&rq->lock, flags);
+#endif
 	}
 	sched_window_stats_policy = WINDOW_STATS_MAX_RECENT_AVG;
 }

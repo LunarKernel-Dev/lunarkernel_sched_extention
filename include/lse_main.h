@@ -77,7 +77,11 @@ static inline u64 lse_rq_clock(struct rq *rq)
 	if (unlikely(lse_clock_suspended))
 		return lse_clock_last;
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 15, 0)
 	if (unlikely(!raw_spin_is_locked(&rq->__lock)))
+#else
+	if (unlikely(!raw_spin_is_locked(&rq->lock)))
+#endif
 		LSE_BUG("on CPU%d: %s task %s(%d) unlocked access"
 				 "for cpu=%d stack[%pS <== %pS <== %pS]\n",
 				 raw_smp_processor_id(), __func__,
