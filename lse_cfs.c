@@ -47,8 +47,13 @@ static void lse_scheduler_tick_cb(void *unused, struct rq *rq)
 	lse_scheduler_tick(NULL);
 }
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 0) && LINUX_VERSION_CODE < KERNEL_VERSION(6, 6, 0)
 static void lse_schedule(void *unused, unsigned int sched_mode, struct task_struct *prev,
 	            struct task_struct *next, struct rq *rq)
+#else
+static void lse_schedule(void *unused, struct task_struct *prev, struct task_struct *next,
+	            struct rq *rq)
+#endif
 {
 	struct lse_entity *prev_lse, *next_lse;
 
