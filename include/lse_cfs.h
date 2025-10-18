@@ -6,7 +6,7 @@
 #ifndef _LSE_CFS_H_
 #define _LSE_CFS_H_
 
-extern void lse_scheduler_tick(void *unused);
+extern void lse_scheduler_tick(void);
 extern void lse_tick_entry(void *unused, struct rq *rq);
 extern void lse_cfs_hooks_register(void);
 
