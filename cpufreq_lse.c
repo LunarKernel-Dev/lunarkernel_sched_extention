@@ -42,7 +42,6 @@ do {										\
 #define DEFAULT_TARGET_LOAD 90
 
 static int gov_flag[MAX_LSE_CLUSTERS] = {0};
-struct proc_dir_entry *lse_dir;
 #define MAX_CLS_NUM 5
 
 static struct irq_work lse_cpufreq_irq_work;
