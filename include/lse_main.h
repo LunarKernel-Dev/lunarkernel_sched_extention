@@ -20,8 +20,6 @@
 #include <linux/percpu.h>
 #include <linux/sched/clock.h>
 #include <linux/sched/cputime.h>
-
-#include <trace/hooks/cpufreq.h>
 #include <trace/hooks/sched.h>
 
 #include <../kernel/sched/sched.h>
