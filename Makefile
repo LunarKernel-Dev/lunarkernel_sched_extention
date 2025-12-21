@@ -16,7 +16,6 @@
 GCOV_PROFILE := y
 obj-$(CONFIG_LUNAR_SCHED_EXT) += lunar_bsp_ext_sched.o
 
-ccflags-y += -I$(src)/include
 lunar_bsp_ext_sched-y := \
         cpufreq_lse.o \
 		lse_cfs.o \

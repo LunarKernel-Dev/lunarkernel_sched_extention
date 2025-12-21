@@ -14,10 +14,7 @@
 #include <linux/slab.h>
 #include <linux/cpufreq.h>
 
-#include "include/lse_sched_cluster.h"
-
-DEFINE_PER_CPU(struct lse_sched_cluster *, lse_sched_cluster);
-DEFINE_PER_CPU(cpumask_t, freq_domain_cpumask);
+#include "lse_main.h"
 
 int __read_mostly lse_num_sched_clusters;
 struct list_head lse_cluster_head;
@@ -60,6 +57,7 @@ static struct lse_sched_cluster init_cluster = {
 static void init_clusters(void)
 {
     int cpu;
+	struct lse_rq *lrq;
 
 	init_cluster.cpus = *cpu_possible_mask;
 	raw_spin_lock_init(&init_cluster.load_lock);
@@ -67,8 +65,9 @@ static void init_clusters(void)
 	list_add(&init_cluster.list, &lse_cluster_head);
 
     for_each_possible_cpu(cpu) {
-        per_cpu(lse_sched_cluster, cpu) = &init_cluster;
-        cpumask_copy(&per_cpu(freq_domain_cpumask, cpu), cpumask_of(cpu));
+		lrq = &per_cpu(lse_rq, cpu);
+        lrq->cluster = &init_cluster;
+        cpumask_copy(&lrq->freq_domain_cpumask, cpumask_of(cpu));
     }
 }
 
@@ -114,12 +113,14 @@ static struct lse_sched_cluster *alloc_new_cluster(const struct cpumask *cpus)
 static void add_cluster(const struct cpumask *cpus, struct list_head *head)
 {
 	struct lse_sched_cluster *cluster = alloc_new_cluster(cpus);
+	struct lse_rq *lrq;
 	int i;
 
     BUG_ON(lse_num_sched_clusters >= MAX_LSE_CLUSTERS);
 
 	for_each_cpu(i, cpus) {
-		per_cpu(lse_sched_cluster, i) = cluster;
+		lrq = &per_cpu(lse_rq, i);
+		lrq->cluster = cluster;
 	}
 
 	insert_cluster(cluster, head);
@@ -129,11 +130,13 @@ static void add_cluster(const struct cpumask *cpus, struct list_head *head)
 static void cleanup_clusters(struct list_head *head)
 {
 	struct lse_sched_cluster *cluster, *tmp;
+	struct lse_rq *lrq;
 	int i;
 
 	list_for_each_entry_safe(cluster, tmp, head, list) {
 		for_each_cpu(i, &cluster->cpus) {
-			per_cpu(lse_sched_cluster, i) = &init_cluster;
+		    lrq = &per_cpu(lse_rq, i);
+            lrq->cluster = &init_cluster;
 		}
 		list_del(&cluster->list);
 		lse_num_sched_clusters--;
@@ -270,14 +273,17 @@ static int cpufreq_notifier_policy(struct notifier_block *nb,
 	switch (val) {
 	case CPUFREQ_CREATE_POLICY:
 		for_each_cpu(i, &policy_cluster) {
-			cluster = per_cpu(lse_sched_cluster, i);
+			struct lse_rq *lrq = &per_cpu(lse_rq, i);
+			cluster = lrq->cluster;
 			cpumask_andnot(&policy_cluster, &policy_cluster,
 				       &cluster->cpus);
 
 			if (!cluster->freq_init_done) {
-				for_each_cpu(j, &cluster->cpus)
-					cpumask_copy(&per_cpu(freq_domain_cpumask, j),
+				for_each_cpu(j, &cluster->cpus) {
+					struct lse_rq *lrq = &per_cpu(lse_rq, j);
+					cpumask_copy(&lrq->freq_domain_cpumask,
 						     policy->related_cpus);
+				}
 
 				cluster->min_freq = policy->min;
 				cluster->max_freq = policy->max;
@@ -319,7 +325,8 @@ static int cpufreq_notifier_trans(struct notifier_block *nb,
 	unsigned int cpu = freq->policy->cpu;
 	unsigned int new_freq = freq->new;
 	struct lse_sched_cluster *cluster = NULL;
-	struct cpumask policy_cpus = per_cpu(freq_domain_cpumask, cpu);
+	struct lse_rq *lrq = &per_cpu(lse_rq, cpu);
+	struct cpumask policy_cpus = lrq->freq_domain_cpumask;
 	int i;
 
 	if (val != CPUFREQ_POSTCHANGE)
@@ -328,7 +335,7 @@ static int cpufreq_notifier_trans(struct notifier_block *nb,
 	BUG_ON(new_freq == 0);
 
 	for_each_cpu(i, &policy_cpus) {
-		cluster = per_cpu(lse_sched_cluster, i);
+		cluster = lrq->cluster;
 		cluster->cur_freq = new_freq;
 		cpumask_andnot(&policy_cpus, &policy_cpus, &cluster->cpus);
 	}

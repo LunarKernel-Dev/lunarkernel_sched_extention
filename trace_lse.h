@@ -13,13 +13,13 @@
 #include <linux/types.h>
 #include <linux/tracepoint.h>
 
-#include "include/lse_main.h"
+#include "lse_main.h"
 
 TRACE_EVENT(lse_update_history,
 
-	TP_PROTO(struct lse_entity *lse, struct rq *rq, struct task_struct *p, u32 runtime, int samples, int event),
+	TP_PROTO(struct lse_task_struct *lts, struct rq *rq, struct task_struct *p, u32 runtime, int samples, int event),
 
-	TP_ARGS(lse, rq, p, runtime, samples, event),
+	TP_ARGS(lts, rq, p, runtime, samples, event),
 
 	TP_STRUCT__entry(
 		__array(char, comm, TASK_COMM_LEN)
@@ -38,9 +38,9 @@ TRACE_EVENT(lse_update_history,
 		__entry->runtime = runtime;
 		__entry->samples = samples;
 		__entry->event = event;
-		__entry->demand = lse->lts.demand;
-		memcpy(__entry->hist, lse->lts.sum_history, RAVG_HIST_SIZE * sizeof(u32));
-		__entry->task_util = lse->lts.demand_scaled,
+		__entry->demand = lts->demand;
+		memcpy(__entry->hist, lts->sum_history, RAVG_HIST_SIZE * sizeof(u32));
+		__entry->task_util = lts->demand_scaled,
 		__entry->cpu = rq->cpu;),
 
 	TP_printk("comm=%s[%d]: runtime %u samples %d event %d demand %u (hist: %u %u %u %u %u) task_util %u cpu %d",

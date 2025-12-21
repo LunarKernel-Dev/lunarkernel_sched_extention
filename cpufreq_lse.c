@@ -18,7 +18,7 @@
 #include <uapi/linux/sched/types.h>
 #include <trace/hooks/sched.h>
 
-#include "include/lse_main.h"
+#include "lse_main.h"
 
 unsigned int sysctl_lse_gov_debug;
 static int cpufreq_gov_debug(void) {return sysctl_lse_gov_debug;}
@@ -425,13 +425,13 @@ static void lse_irq_work(struct irq_work *irq_work)
 	cpumask_t lock_cpus;
 	struct lse_sched_cluster *cluster;
 	struct cpufreq_policy *policy;
-	struct lse_sched_rq_stats *lrq;
+	struct lse_rq *lrq;
 	struct rq *rq;
 	int cpu;
 	int level = 0;
 	u64 wc;
 	unsigned long flags;
-	struct lse_entity *lse;
+	struct lse_task_struct *lts;
 
 	cpumask_copy(&lock_cpus, cpu_possible_mask);
 
@@ -462,10 +462,10 @@ static void lse_irq_work(struct irq_work *irq_work)
 		cpumask_and(&cluster_online_cpus, &cluster->cpus, cpu_online_mask);
 		for_each_cpu(cpu, &cluster_online_cpus) {
 			rq = cpu_rq(cpu);
-			lse = get_lunar_ext_entity(rq->curr);
-			if (lse)
-				lse_update_task_ravg(lse, rq->curr, rq, TASK_UPDATE, wc);
-			lrq = &per_cpu(lse_sched_rq_stats, cpu);
+			lts = get_lse_task_struct(rq->curr);
+			if (lts)
+				lse_update_task_ravg(lts, rq->curr, rq, TASK_UPDATE, wc);
+			lrq = &per_cpu(lse_rq, cpu);
 			if (cpufreq_gov_debug() & DEBUG_FTRACE)
 				gov_trace_printk("cpu[%d] prev_runnable_sum[%llu]\n", cpu, lrq->prev_runnable_sum);
 			prev_runnable_sum = max(prev_runnable_sum, lrq->prev_runnable_sum);
@@ -479,7 +479,7 @@ static void lse_irq_work(struct irq_work *irq_work)
 
 	spin_lock_irqsave(&new_sched_ravg_window_lock, flags);
 	if (unlikely(new_lse_sched_ravg_window != lse_sched_ravg_window)) {
-		lrq = &per_cpu(lse_sched_rq_stats, smp_processor_id());
+		lrq = &per_cpu(lse_rq, smp_processor_id());
 		if (wc < lrq->window_start + new_lse_sched_ravg_window) {
 			lse_sched_ravg_window = new_lse_sched_ravg_window;
 			lse_fixup_window_dep();

@@ -13,7 +13,32 @@
 
 #include <trace/hooks/sched.h>
 
-#include "include/lse_main.h"
+#include "lse_main.h"
+
+static inline u64 lse_rq_clock(struct rq *rq)
+{
+	struct lse_rq *lrq = &per_cpu(lse_rq, cpu_of(rq));
+
+	if (unlikely(lse_clock_suspended))
+		return lse_clock_last;
+
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 15, 0)
+	if (unlikely(!raw_spin_is_locked(&rq->__lock)))
+#else
+	if (unlikely(!raw_spin_is_locked(&rq->lock)))
+#endif
+		LSE_BUG("on CPU%d: %s task %s(%d) unlocked access"
+				 "for cpu=%d stack[%pS <== %pS <== %pS]\n",
+				 raw_smp_processor_id(), __func__,
+				 current->comm, current->pid, rq->cpu,
+				 (void *)CALLER_ADDR0,
+				 (void *)CALLER_ADDR1, (void *)CALLER_ADDR2);
+
+	if (!(rq->clock_update_flags & RQCF_UPDATED))
+		update_rq_clock(rq);
+
+	return max(rq_clock(rq), lrq->latest_clock);
+}
 
 void lse_scheduler_tick(void)
 {
@@ -35,9 +60,9 @@ void lse_scheduler_tick(void)
 			return;
 
 		for_each_possible_cpu(cpu) {
-		    struct lse_sched_rq_stats *srq = &per_cpu(lse_sched_rq_stats, cpu);
+		    struct lse_rq *lrq = &per_cpu(lse_rq, cpu);
 
-			srq->window_start = tick_sched_clock;
+			lrq->window_start = tick_sched_clock;
 		}
 
 		atomic64_set(&lse_run_rollover_lastq_ws, tick_sched_clock);
@@ -57,34 +82,34 @@ static void lse_schedule(void *unused, struct task_struct *prev, struct task_str
 	            struct rq *rq)
 #endif
 {
-	struct lse_entity *prev_lse, *next_lse;
+	struct lse_task_struct *prev_lts, *next_lts;
 
 	if (!slim_walt_ctrl)
 		return;
 
-	prev_lse = get_lunar_ext_entity(prev);
+	prev_lts = get_lse_task_struct(prev);
 	if (likely(prev != next)) {
-		next_lse = get_lunar_ext_entity(next);
+		next_lts = get_lse_task_struct(next);
 
-		if (prev_lse)
-			lse_update_task_ravg(prev_lse, prev, rq, PUT_PREV_TASK, lse_rq_clock(rq));
+		if (prev_lts)
+			lse_update_task_ravg(prev_lts, prev, rq, PUT_PREV_TASK, lse_rq_clock(rq));
 
-		if (next_lse)
-			lse_update_task_ravg(next_lse, next, rq, PICK_NEXT_TASK, lse_rq_clock(rq));
-	} else if (prev_lse)
-		lse_update_task_ravg(prev_lse, prev, rq, TASK_UPDATE, lse_rq_clock(rq));
+		if (next_lts)
+			lse_update_task_ravg(next_lts, next, rq, PICK_NEXT_TASK, lse_rq_clock(rq));
+	} else if (prev_lts)
+		lse_update_task_ravg(prev_lts, prev, rq, TASK_UPDATE, lse_rq_clock(rq));
 }
 
 void lse_tick_entry(void *unused, struct rq *rq)
 {
-	struct lse_entity *curr_lse;
+	struct lse_task_struct *curr_lts;
 
 	if (!slim_walt_ctrl)
 		return;
 
-	curr_lse = get_lunar_ext_entity(rq->curr);
-	if (curr_lse)
-		lse_update_task_ravg(curr_lse, rq->curr, rq, TASK_UPDATE, lse_rq_clock(rq));
+	curr_lts = get_lse_task_struct(rq->curr);
+	if (curr_lts)
+		lse_update_task_ravg(curr_lts, rq->curr, rq, TASK_UPDATE, lse_rq_clock(rq));
 }
 
 void lse_cfs_hooks_register(void)

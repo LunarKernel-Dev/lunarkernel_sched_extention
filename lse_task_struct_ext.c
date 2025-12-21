@@ -16,7 +16,7 @@
 #include <trace/hooks/sched.h>
 #include <../kernel/sched/sched.h>
 
-#include "include/lse_task_struct_ext.h"
+#include "lse_main.h"
 
 static struct kmem_cache *lse_task_struct_cachep;
 
@@ -24,13 +24,6 @@ static void init_lse_task_struct(struct lse_task_struct *lts, struct task_struct
 {
     memset(lts, 0, sizeof(struct lse_task_struct));
     lts->task = tsk;
-/*#ifdef CONFIG_HMBIRD_SCHED_GKI*/
-	INIT_LIST_HEAD(&lts->lse.dsq_node.fifo);
-	RB_CLEAR_NODE(&lts->lse.dsq_node.priq);
-	lts->lse.sticky_cpu = -1;
-	lts->lse.runnable_at = INITIAL_JIFFIES;
-	lts->lse.gdsq_idx = DEFAULT_CGROUP_DL_IDX;
-/*#endif*/
 }
 
 static void alloc_lse_task_struct(void *unused, struct task_struct *tsk,
@@ -68,38 +61,6 @@ static void free_lse_task_struct(void *unused, struct task_struct *tsk)
 
     kmem_cache_free(lse_task_struct_cachep, lts);
 }
-
-/*#ifdef CONFIG_HMBIRD_SCHED_GKI*/
-static void lse_sched_fork(void *unused, struct task_struct *p)
-{
-	struct lse_task_struct *lts = get_lse_task_struct(p);
-	struct lse_task_struct *curr_lts = get_lse_task_struct(current);
-	if (!lts)
-		return;
-
-	//lts->lse.dsq = NULL;
-	INIT_LIST_HEAD(&lts->lse.dsq_node.fifo);
-	RB_CLEAR_NODE(&lts->lse.dsq_node.priq);
-	lts->lse.flags = 0;
-	lts->lse.dsq_flags = 0;
-	lts->lse.sticky_cpu = -1;
-	lts->lse.runnable_at = INITIAL_JIFFIES;
-	lts->lse.slice = LSE_SLICE_DFL;
-	lts->lse.sched_prop = 0;
-	lts->lse.ext_flags = 0;
-	lts->lse.prio_backup = 0;
-	lts->lse.gdsq_idx = DEFAULT_CGROUP_DL_IDX;
-	memset(&lts->lse.lts, 0, sizeof(struct lse_task_stats));
-	if (curr_lts) {
-		if ((curr_lts->lse.ext_flags & EXT_FLAG_RT_CHANGED) && !p->sched_reset_on_fork) {
-			lts->lse.ext_flags |= EXT_FLAG_RT_CHANGED;
-			lts->lse.prio_backup = curr_lts->lse.prio_backup;
-		}
-		if (curr_lts->lse.ext_flags & EXT_FLAG_CFS_CHANGED)
-			lts->lse.ext_flags |= EXT_FLAG_CFS_CHANGED;
-	}
-}
-/*#endif*/
 
 static void alloc_lts_mem_for_all_threads(void)
 {
@@ -153,9 +114,6 @@ int lse_task_struct_ext_init(void)
 
     register_trace_android_vh_dup_task_struct(alloc_lse_task_struct, NULL);
     register_trace_android_vh_free_task(free_lse_task_struct, NULL);
-/*#ifdef CONFIG_HMBIRD_SCHED_GKI*/
-    register_trace_android_rvh_sched_fork(lse_sched_fork, NULL);
-/*#endif*/
 
     return 0;
 }

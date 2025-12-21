@@ -14,7 +14,7 @@
 #include <linux/kernel.h>
 #include <linux/sysctl.h>
 
-#include "include/lse_main.h"
+#include "lse_main.h"
 
 int slim_walt_ctrl = 1;
 int frame_per_sec = 120;

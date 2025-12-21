@@ -14,7 +14,7 @@
 #include <linux/module.h>
 #include <linux/syscore_ops.h>
 
-#include "include/lse_main.h"
+#include "lse_main.h"
 
 #define CREATE_TRACE_POINTS
 #include "trace_lse.h"
@@ -28,6 +28,14 @@ noinline int lse_tracing_mark_write(const char *buf)
 	trace_printk(buf);
 	return 0;
 }
+
+u64 lse_sched_clock(void)
+{
+	if (unlikely(lse_clock_suspended))
+		return lse_clock_last;
+	return sched_clock();
+}
+EXPORT_SYMBOL_GPL(lse_sched_clock);
 
 static void lse_resume(void)
 {

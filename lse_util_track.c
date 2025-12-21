@@ -14,7 +14,7 @@
 #include <linux/sched.h>
 #include <linux/sched/cputime.h>
 
-#include "include/lse_main.h"
+#include "lse_main.h"
 #include "trace_lse.h"
 
 static inline void window_rollover_systrace_c(void)
@@ -42,10 +42,12 @@ static inline void cpu_util_update_systrace_c(int cpu)
 	}
 }
 
-__read_mostly int lse_sched_ravg_window = 8000000;
-int new_lse_sched_ravg_window = 8000000;
+unsigned int __read_mostly lse_sched_ravg_window = DEFAULT_SCHED_RAVG_WINDOW;
+EXPORT_SYMBOL_GPL(lse_sched_ravg_window);
+__read_mostly unsigned int new_lse_sched_ravg_window = DEFAULT_SCHED_RAVG_WINDOW;
 DEFINE_SPINLOCK(new_sched_ravg_window_lock);
-DEFINE_PER_CPU(struct lse_sched_rq_stats, lse_sched_rq_stats);
+DEFINE_PER_CPU(struct lse_rq, lse_rq);
+EXPORT_PER_CPU_SYMBOL_GPL(lse_rq);
 
 __read_mostly unsigned int lse_scale_demand_divisor;
 
@@ -56,15 +58,13 @@ int sched_window_stats_policy;
 
 inline u64 scale_exec_time(u64 delta, struct rq *rq)
 {
-	struct lse_sched_rq_stats *lrq = &per_cpu(lse_sched_rq_stats, cpu_of(rq));
+	struct lse_rq *lrq = &per_cpu(lse_rq, cpu_of(rq));
 
 	return (delta * lrq->task_exec_scale) >> LSE_SCHED_CAPACITY_SHIFT;
 }
 
-static u64 add_to_task_demand(struct lse_entity *lse, struct rq *rq, struct task_struct *p, u64 delta)
+static u64 add_to_task_demand(struct lse_task_struct *lts, struct rq *rq, struct task_struct *p, u64 delta)
 {
-	struct lse_task_stats *lts = &lse->lts;
-
 	delta = scale_exec_time(delta, rq);
 	lts->sum += delta;
 	if (unlikely(lts->sum > lse_sched_ravg_window))
@@ -116,7 +116,7 @@ account_busy_for_task_demand(struct rq *rq, struct task_struct *p, int event)
 
 static void rollover_cpu_window(struct rq *rq, bool full_window)
 {
-	struct lse_sched_rq_stats *lrq = &per_cpu(lse_sched_rq_stats, cpu_of(rq));
+	struct lse_rq *lrq = &per_cpu(lse_rq, cpu_of(rq));
 	u64 curr_sum = lrq->curr_runnable_sum;
 
 	if (unlikely(full_window))
@@ -133,7 +133,7 @@ update_window_start(struct rq *rq, u64 wallclock)
 	int nr_windows;
 	bool full_window;
 
-	struct lse_sched_rq_stats *lrq = &per_cpu(lse_sched_rq_stats, cpu_of(rq));
+	struct lse_rq *lrq = &per_cpu(lse_rq, cpu_of(rq));
 	u64 old_window_start = lrq->window_start;
 
 	if (wallclock < lrq->latest_clock) {
@@ -182,7 +182,7 @@ static void
 update_task_rq_cpu_cycles(struct task_struct *p, struct rq *rq, u64 wallclock)
 {
 	int cpu = cpu_of(rq);
-	struct lse_sched_rq_stats *lrq = &per_cpu(lse_sched_rq_stats, cpu_of(rq));
+	struct lse_rq *lrq = &per_cpu(lse_rq, cpu_of(rq));
 
 	lrq->task_exec_scale = DIV64_U64_ROUNDUP(cpu_cur_freq(cpu) *
 					arch_scale_cpu_capacity(cpu), get_max_freq(cpu));
@@ -194,10 +194,9 @@ update_task_rq_cpu_cycles(struct task_struct *p, struct rq *rq, u64 wallclock)
  * when, say, a real-time task runs without preemption for several windows at a
  * stretch.
  */
-static void update_history(struct lse_entity *lse, struct rq *rq, struct task_struct *p,
+static void update_history(struct lse_task_struct *lts, struct rq *rq, struct task_struct *p,
 			 u32 runtime, int samples, int event)
 {
-	struct lse_task_stats *lts = &lse->lts;
 	u32 *hist = &lts->sum_history[0];
 	int i;
 	u32 max = 0, avg, demand;
@@ -244,21 +243,17 @@ static void update_history(struct lse_entity *lse, struct rq *rq, struct task_st
 	lts->demand_scaled = demand_scaled;
 
 done:
-	trace_lse_update_history(lse, rq, p, runtime, samples_old, event);
+	trace_lse_update_history(lts, rq, p, runtime, samples_old, event);
 	return;
 }
 
 
 static u64
-update_task_demand(struct lse_entity *lse, struct task_struct *p, struct rq *rq,
+update_task_demand(struct lse_task_struct *lts, struct task_struct *p, struct rq *rq,
 			       int event, u64 wallclock)
 {
-	struct lse_task_stats *lts = &lse->lts;
-
 	u64 mark_start = lts->mark_start;
-	struct lse_sched_rq_stats *lrq = &per_cpu(lse_sched_rq_stats, cpu_of(rq));
-
-
+	struct lse_rq *lrq = &per_cpu(lse_rq, cpu_of(rq));
 	u64 delta, window_start = lrq->window_start;
 	int new_window, nr_full_windows;
 	u32 window_size = lse_sched_ravg_window;
@@ -275,7 +270,7 @@ update_task_demand(struct lse_entity *lse, struct task_struct *p, struct rq *rq,
 			 * elapsed, but since empty windows are dropped,
 			 * it is not necessary to account those.
 			 */
-			update_history(lse, rq, p, lts->sum, 1, event);
+			update_history(lts, rq, p, lts->sum, 1, event);
 		return 0;
 	}
 
@@ -284,7 +279,7 @@ update_task_demand(struct lse_entity *lse, struct task_struct *p, struct rq *rq,
 		 * The simple case - busy time contained within the existing
 		 * window.
 		 */
-		return add_to_task_demand(lse, rq, p, wallclock - mark_start);
+		return add_to_task_demand(lts, rq, p, wallclock - mark_start);
 	}
 
 	/*
@@ -296,14 +291,14 @@ update_task_demand(struct lse_entity *lse, struct task_struct *p, struct rq *rq,
 	window_start -= (u64)nr_full_windows * (u64)window_size;
 
 	/* Process (window_start - mark_start) first */
-	runtime = add_to_task_demand(lse, rq, p, window_start - mark_start);
+	runtime = add_to_task_demand(lts, rq, p, window_start - mark_start);
 
 	/* Push new sample(s) into task's demand history */
-	update_history(lse, rq, p, lts->sum, 1, event);
+	update_history(lts, rq, p, lts->sum, 1, event);
 	if (nr_full_windows) {
 		u64 scaled_window = scale_exec_time(window_size, rq);
 
-		update_history(lse, rq, p, scaled_window, nr_full_windows, event);
+		update_history(lts, rq, p, scaled_window, nr_full_windows, event);
 		runtime += nr_full_windows * scaled_window;
 	}
 
@@ -315,7 +310,7 @@ update_task_demand(struct lse_entity *lse, struct task_struct *p, struct rq *rq,
 
 	/* Process (wallclock - window_start) next */
 	mark_start = window_start;
-	runtime += add_to_task_demand(lse, rq, p, wallclock - mark_start);
+	runtime += add_to_task_demand(lts, rq, p, wallclock - mark_start);
 
 	return runtime;
 }
@@ -327,13 +322,12 @@ static inline int account_busy_for_cpu_time(struct rq *rq, struct task_struct *p
 }
 
 
-static void update_cpu_busy_time(struct lse_entity *lse, struct task_struct *p, struct rq *rq,
+static void update_cpu_busy_time(struct lse_task_struct *lts, struct task_struct *p, struct rq *rq,
 				 int event, u64 wallclock)
 {
 	int new_window, full_window = 0;
-	struct lse_task_stats *lts = &lse->lts;
 	u64 mark_start = lts->mark_start;
-	struct lse_sched_rq_stats *lrq = &per_cpu(lse_sched_rq_stats, cpu_of(rq));
+	struct lse_rq *lrq = &per_cpu(lse_rq, cpu_of(rq));
 	u64 window_start = lrq->window_start;
 	u32 window_size = lrq->prev_window_size;
 	u64 delta;
@@ -413,7 +407,7 @@ done:
 void lse_window_rollover_run_once(u64 old_window_start, struct rq *rq)
 {
 	u64 result;
-	struct lse_sched_rq_stats *lrq = &per_cpu(lse_sched_rq_stats, cpu_of(rq));
+	struct lse_rq *lrq = &per_cpu(lse_rq, cpu_of(rq));
 	u64 new_window_start = lrq->window_start;
 
 	if (old_window_start == new_window_start)
@@ -429,10 +423,9 @@ void lse_window_rollover_run_once(u64 old_window_start, struct rq *rq)
 		window_rollover_systrace_c();
 }
 
-void lse_update_task_ravg(struct lse_entity *lse, struct task_struct *p, struct rq *rq, int event, u64 wallclock)
+void lse_update_task_ravg(struct lse_task_struct *lts, struct task_struct *p, struct rq *rq, int event, u64 wallclock)
 {
-	struct lse_task_stats *lts = &lse->lts;
-	struct lse_sched_rq_stats *lrq = &per_cpu(lse_sched_rq_stats, cpu_of(rq));
+	struct lse_rq *lrq = &per_cpu(lse_rq, cpu_of(rq));
 	u64 old_window_start;
 
 	if(!slim_walt_ctrl)
@@ -462,8 +455,8 @@ void lse_update_task_ravg(struct lse_entity *lse, struct task_struct *p, struct 
 		goto done;
 
 	update_task_rq_cpu_cycles(p, rq, wallclock);
-	update_task_demand(lse, p, rq, event, wallclock);
-	update_cpu_busy_time(lse, p, rq, event, wallclock);
+	update_task_demand(lts, p, rq, event, wallclock);
+	update_cpu_busy_time(lts, p, rq, event, wallclock);
 
 	lts->window_start = lrq->window_start;
 
@@ -481,7 +474,7 @@ done:
 u16 lse_cpu_util(int cpu)
 {
 	u64 prev_runnable_sum;
-	struct lse_sched_rq_stats *lrq = &per_cpu(lse_sched_rq_stats, cpu);
+	struct lse_rq *lrq = &per_cpu(lse_rq, cpu);
 
 	prev_runnable_sum = lrq->prev_runnable_sum;
 	do_div(prev_runnable_sum, lrq->prev_window_size >> LSE_SCHED_CAPACITY_SHIFT);
@@ -491,11 +484,8 @@ u16 lse_cpu_util(int cpu)
 
 static void lse_sched_init_rq(struct rq *rq)
 {
-	struct lse_sched_rq_stats *lrq = &per_cpu(lse_sched_rq_stats, cpu_of(rq));
+	struct lse_rq *lrq = &per_cpu(lse_rq, cpu_of(rq));
 
-	lrq->local_dsq_s.nr_period_tasks = 0;
-	lrq->local_dsq_s.nr_tasks = 0;
-	lrq->local_dsq_s.cumulative_runnable_avg_scaled = 0;
 	lrq->prev_window_size = lse_sched_ravg_window;
 	lrq->task_exec_scale = 1024;
 	lrq->window_start = 0;
