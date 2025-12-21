@@ -781,7 +781,7 @@ static void lse_gov_limits(struct cpufreq_policy *policy)
 }
 
 struct cpufreq_governor cpufreq_lse_gov = {
-	.name			= "lse",
+	.name			= "lunar_ext_gov",
 	.owner			= THIS_MODULE,
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0)
 	.flags			= CPUFREQ_GOV_DYNAMIC_SWITCHING,
