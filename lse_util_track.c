@@ -49,6 +49,9 @@ DEFINE_SPINLOCK(new_sched_ravg_window_lock);
 DEFINE_PER_CPU(struct lse_rq, lse_rq);
 EXPORT_PER_CPU_SYMBOL_GPL(lse_rq);
 
+static bool init_irq_work_inited;
+static struct irq_work lse_slim_walt_irq_work;
+
 __read_mostly unsigned int lse_scale_demand_divisor;
 
 atomic64_t lse_run_rollover_lastq_ws;
@@ -60,7 +63,7 @@ inline u64 scale_exec_time(u64 delta, struct rq *rq)
 {
 	struct lse_rq *lrq = &per_cpu(lse_rq, cpu_of(rq));
 
-	return (delta * lrq->task_exec_scale) >> LSE_SCHED_CAPACITY_SHIFT;
+	return (delta * lrq->task_exec_scale) >> SCHED_CAPACITY_SHIFT;
 }
 
 static u64 add_to_task_demand(struct lse_task_struct *lts, struct rq *rq, struct task_struct *p, u64 delta)
@@ -417,7 +420,12 @@ void lse_window_rollover_run_once(u64 old_window_start, struct rq *rq)
 
 	if (result != old_window_start)
 		return;
-	run_lse_irq_work_rollover();
+
+	if (likely(cpu_online(raw_smp_processor_id())))
+		irq_work_queue(&lse_slim_walt_irq_work);
+	else
+		irq_work_queue_on(&lse_slim_walt_irq_work, cpumask_any(cpu_online_mask));
+
 	trace_lse_run_window_rollover(old_window_start, new_window_start);
 	if (dump_info & LSE_DEBUG_SYSTRACE)
 		window_rollover_systrace_c();
@@ -471,13 +479,68 @@ done:
 	lse_window_rollover_run_once(old_window_start, rq);
 }
 
+static void lse_irq_work(struct irq_work *irq_work)
+{
+	cpumask_t lock_cpus;
+	struct lse_rq *lrq;
+	struct rq *rq;
+	int cpu;
+	int level = 0;
+	u64 wc;
+	unsigned long flags;
+	struct lse_task_struct *lts;
+
+	cpumask_copy(&lock_cpus, cpu_possible_mask);
+
+	for_each_cpu(cpu, &lock_cpus) {
+		if (level == 0)
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 15, 0)
+			raw_spin_lock(&cpu_rq(cpu)->__lock);
+#else
+            raw_spin_lock(&cpu_rq(cpu)->lock);
+#endif
+		else
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 15, 0)
+			raw_spin_lock_nested(&cpu_rq(cpu)->__lock, level);
+#else
+			raw_spin_lock_nested(&cpu_rq(cpu)->lock, level);
+#endif
+		level++;
+	}
+
+	wc = lse_sched_clock();
+
+	for_each_cpu(cpu, &lock_cpus) {
+		rq = cpu_rq(cpu);
+		lts = get_lse_task_struct(rq->curr);
+		if (lts)
+	    	lse_update_task_ravg(lts, rq->curr, rq, TASK_UPDATE, wc);
+	}
+
+	cpufreq_update_util(cpu_rq(0), LSE_CPUFREQ_WINDOW_ROLLOVER);
+	spin_lock_irqsave(&new_sched_ravg_window_lock, flags);
+	if (unlikely(new_lse_sched_ravg_window != lse_sched_ravg_window)) {
+		lrq = &per_cpu(lse_rq, smp_processor_id());
+		if (wc < lrq->window_start + new_lse_sched_ravg_window)
+			lse_sched_ravg_window = new_lse_sched_ravg_window;
+	}
+	spin_unlock_irqrestore(&new_sched_ravg_window_lock, flags);
+
+	for_each_cpu(cpu, &lock_cpus)
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 15, 0)
+		raw_spin_unlock(&cpu_rq(cpu)->__lock);
+#else
+		raw_spin_unlock(&cpu_rq(cpu)->lock);
+#endif
+}
+
 u16 lse_cpu_util(int cpu)
 {
 	u64 prev_runnable_sum;
 	struct lse_rq *lrq = &per_cpu(lse_rq, cpu);
 
 	prev_runnable_sum = lrq->prev_runnable_sum;
-	do_div(prev_runnable_sum, lrq->prev_window_size >> LSE_SCHED_CAPACITY_SHIFT);
+	do_div(prev_runnable_sum, lrq->prev_window_size >> SCHED_CAPACITY_SHIFT);
 
 	return (u16)prev_runnable_sum;
 }
@@ -512,6 +575,11 @@ void lse_sched_stats_init(void)
 #endif
 	}
 	sched_window_stats_policy = WINDOW_STATS_MAX_RECENT_AVG;
+
+	if (false == init_irq_work_inited) {
+		init_irq_work(&lse_slim_walt_irq_work, lse_irq_work);
+		init_irq_work_inited = true;
+	}
 }
 
 void sched_ravg_window_change(int frame_per_sec)

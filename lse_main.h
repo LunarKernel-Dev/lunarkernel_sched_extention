@@ -51,7 +51,7 @@ do {										\
 #define WINDOW_STATS_AVG		3
 #define WINDOW_STATS_INVALID_POLICY	4
 
-#define LSE_SCHED_CAPACITY_SHIFT  10
+#define LSE_CPUFREQ_WINDOW_ROLLOVER BIT(31)
 #define SCHED_ACCOUNT_WAIT_TIME 0
 
 #define lts_to_ts(lts)	(lts->task)

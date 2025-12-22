@@ -42,9 +42,6 @@ do {										\
 #define DEFAULT_TARGET_LOAD 90
 
 static int gov_flag[MAX_LSE_CLUSTERS] = {0};
-#define MAX_CLS_NUM 5
-
-static struct irq_work lse_cpufreq_irq_work;
 
 struct lse_gov_tunables {
 	struct gov_attr_set		attr_set;
@@ -70,9 +67,11 @@ struct lse_gov_policy {
 	struct task_struct	*thread;
 	bool			work_in_progress;
 	unsigned int	target_load;
+    bool            backup_efficiencies_available;
 };
 
 struct lse_gov_cpu {
+	struct update_util_data update_util;
 	unsigned int		reasons;
 	struct lse_gov_policy	*lg_policy;
 	unsigned int		cpu;
@@ -109,19 +108,6 @@ static void lse_gov_work(struct kthread_work *work)
 	mutex_lock(&lg_policy->work_lock);
 	__cpufreq_driver_target(lg_policy->policy, freq, CPUFREQ_RELATION_L);
 	mutex_unlock(&lg_policy->work_lock);
-}
-
-static inline void lse_irq_work_queue(struct irq_work *work)
-{
-	if (likely(cpu_online(raw_smp_processor_id())))
-		irq_work_queue(work);
-	else
-		irq_work_queue_on(work, cpumask_any(cpu_online_mask));
-}
-
-void run_lse_irq_work_rollover(void)
-{
-	lse_irq_work_queue(&lse_cpufreq_irq_work);
 }
 
 /* next_freq = (max_freq * scale_time* 100)/(window_size * TL * arch_scale_cpu_capacity) */
@@ -420,79 +406,32 @@ static void lse_gov_policy_free(struct lse_gov_policy *lg_policy)
 	kfree(lg_policy);
 }
 
-static void lse_irq_work(struct irq_work *irq_work)
+static void lsegov_update_freq(struct update_util_data *cb, u64 time, unsigned int flags)
 {
-	cpumask_t lock_cpus;
 	struct lse_sched_cluster *cluster;
 	struct cpufreq_policy *policy;
 	struct lse_rq *lrq;
-	struct rq *rq;
 	int cpu;
-	int level = 0;
-	u64 wc;
-	unsigned long flags;
-	struct lse_task_struct *lts;
 
-	cpumask_copy(&lock_cpus, cpu_possible_mask);
+	if (flags & LSE_CPUFREQ_WINDOW_ROLLOVER) {
+		for_each_lse_cluster(cluster) {
+			cpumask_t cluster_online_cpus;
+			u64 prev_runnable_sum = 0;
+			if (gov_flag[cluster->id] == 0)
+				continue;
+			cpumask_and(&cluster_online_cpus, &cluster->cpus, cpu_online_mask);
+			for_each_cpu(cpu, &cluster_online_cpus) {
+				lrq = &per_cpu(lse_rq, cpu);
+				if (cpufreq_gov_debug() & DEBUG_FTRACE)
+					gov_trace_printk("cpu[%d] prev_runnable_sum[%llu]\n", cpu, lrq->prev_runnable_sum);
+				prev_runnable_sum = max(prev_runnable_sum, lrq->prev_runnable_sum);
+			}
 
-	for_each_cpu(cpu, &lock_cpus) {
-		if (level == 0)
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 15, 0)
-			raw_spin_lock(&cpu_rq(cpu)->__lock);
-#else
-            raw_spin_lock(&cpu_rq(cpu)->lock);
-#endif
-		else
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 15, 0)
-			raw_spin_lock_nested(&cpu_rq(cpu)->__lock, level);
-#else
-			raw_spin_lock_nested(&cpu_rq(cpu)->lock, level);
-#endif
-		level++;
-	}
-
-	wc = lse_sched_clock();
-
-	for_each_lse_cluster(cluster) {
-		cpumask_t cluster_online_cpus;
-		u64 prev_runnable_sum = 0;
-
-		if (gov_flag[cluster->id] == 0)
-			continue;
-		cpumask_and(&cluster_online_cpus, &cluster->cpus, cpu_online_mask);
-		for_each_cpu(cpu, &cluster_online_cpus) {
-			rq = cpu_rq(cpu);
-			lts = get_lse_task_struct(rq->curr);
-			if (lts)
-				lse_update_task_ravg(lts, rq->curr, rq, TASK_UPDATE, wc);
-			lrq = &per_cpu(lse_rq, cpu);
-			if (cpufreq_gov_debug() & DEBUG_FTRACE)
-				gov_trace_printk("cpu[%d] prev_runnable_sum[%llu]\n", cpu, lrq->prev_runnable_sum);
-			prev_runnable_sum = max(prev_runnable_sum, lrq->prev_runnable_sum);
+			policy = cpufreq_cpu_get_raw(cpumask_first(&cluster_online_cpus));
+			if (policy == NULL)
+				lse_gov_err("NULL policy [%d]\n", cpumask_first(&cluster_online_cpus));
+			lse_gov_update_cpufreq(policy, prev_runnable_sum);
 		}
-
-		policy = cpufreq_cpu_get_raw(cpumask_first(&cluster_online_cpus));
-		if (policy == NULL)
-			lse_gov_err("NULL policy [%d]\n", cpumask_first(&cluster_online_cpus));
-		lse_gov_update_cpufreq(policy, prev_runnable_sum);
-	}
-
-	spin_lock_irqsave(&new_sched_ravg_window_lock, flags);
-	if (unlikely(new_lse_sched_ravg_window != lse_sched_ravg_window)) {
-		lrq = &per_cpu(lse_rq, smp_processor_id());
-		if (wc < lrq->window_start + new_lse_sched_ravg_window) {
-			lse_sched_ravg_window = new_lse_sched_ravg_window;
-			lse_fixup_window_dep();
-		}
-	}
-	spin_unlock_irqrestore(&new_sched_ravg_window_lock, flags);
-
-	for_each_cpu(cpu, &lock_cpus) {
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 15, 0)
-		raw_spin_unlock(&cpu_rq(cpu)->__lock);
-#else
-		raw_spin_unlock(&cpu_rq(cpu)->lock);
-#endif
 	}
 }
 
@@ -712,6 +651,7 @@ static int lse_gov_start(struct cpufreq_policy *policy)
 		memset(lg_cpu, 0, sizeof(*lg_cpu));
 		lg_cpu->cpu			= cpu;
 		lg_cpu->lg_policy		= lg_policy;
+		cpufreq_add_update_util_hook(cpu, &lg_cpu->update_util, lsegov_update_freq);
 	}
 	cpu = cpumask_first(policy->related_cpus);
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 0)
@@ -720,6 +660,11 @@ static int lse_gov_start(struct cpufreq_policy *policy)
     cluster_id = topology_physical_package_id(cpu);
 #endif
 	lse_gov_debug("start cluster[%d] cluster_id[%d] gov\n", cpu, cluster_id);
+
+	/* backup efficiencies_available, set lse efficiencies_available is false*/
+	lg_policy->backup_efficiencies_available = policy->efficiencies_available;
+	policy->efficiencies_available = false;
+
 	if (cluster_id < MAX_LSE_CLUSTERS)
 		gov_flag[cluster_id] = 1;
 
@@ -730,10 +675,15 @@ static void lse_gov_stop(struct cpufreq_policy *policy)
 {
 	struct lse_gov_policy *lg_policy = policy->governor_data;
 	unsigned int cpu, cluster_id;
-	if (!policy->fast_switch_enabled) {
-		irq_work_sync(&lse_cpufreq_irq_work);
+
+	for_each_cpu(cpu, policy->cpus)
+		cpufreq_remove_update_util_hook(cpu);
+
+	if (!policy->fast_switch_enabled)
 		kthread_cancel_work_sync(&lg_policy->work);
-	}
+
+	/* restore efficiencies_available */
+	policy->efficiencies_available = lg_policy->backup_efficiencies_available;
 
 	cpu = cpumask_first(policy->related_cpus);
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 0)
@@ -810,6 +760,5 @@ int lse_cpufreq_init(void)
 			arch_scale_cpu_capacity(cpumask_first(&cluster->cpus)),
 			num_possible_cpus());
 
-	init_irq_work(&lse_cpufreq_irq_work, lse_irq_work);
 	return ret;
 }
